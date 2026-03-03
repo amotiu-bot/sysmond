@@ -6,13 +6,13 @@
  * K3 button: LED1 color indicates CPU usage (GREEN/YELLOW/RED)
  *
  * LED1 RGB PWM mapping:
- *   Red   -> pwmchip4 pwm2
- *   Blue  -> pwmchip0 pwm2
- *   Green -> pwmchip0 pwm0
+ *   Red   -> pwmchip4 pwm2  (GPIO_IO13 -> TPM4_CH2)
+ *   Blue  -> pwmchip0 pwm2  (GPIO_IO12 -> TPM3_CH2)
+ *   Green -> pwmchip0 pwm0  (GPIO_IO04 -> TPM3_CH0)
  *
- * Buttons (libgpiod):
- *   K2 -> gpiochip4 line 5
- *   K3 -> gpiochip4 line 6
+ * Buttons (libgpiod v2):
+ *   K2 -> /dev/gpiochip4 line 5
+ *   K3 -> /dev/gpiochip4 line 6
  */
 
 #include <stdio.h>
@@ -26,11 +26,9 @@
 #include <time.h>
 #include <gpiod.h>
 
-/* ── Configuration defaults ────────────────────────────────────────────── */
 #define DEFAULT_LOG_INTERVAL_SEC   5
 #define CONFIG_FILE                "/etc/sysmond.conf"
 
-/* ── PWM sysfs paths ────────────────────────────────────────────────────── */
 #define PWM_RED_CHIP    "pwmchip4"
 #define PWM_RED_CH      "pwm2"
 #define PWM_BLUE_CHIP   "pwmchip0"
@@ -38,35 +36,27 @@
 #define PWM_GREEN_CHIP  "pwmchip0"
 #define PWM_GREEN_CH    "pwm0"
 #define PWM_BASE        "/sys/class/pwm"
-#define PWM_PERIOD_NS   1000000   /* 1 ms period */
+#define PWM_PERIOD_NS   1000000
 
-/* ── GPIO config ────────────────────────────────────────────────────────── */
-#define BUTTON_CHIP     "gpiochip4"
+#define BUTTON_CHIP_DEV "/dev/gpiochip4"
 #define BUTTON_K2_LINE  5
 #define BUTTON_K3_LINE  6
 
-/* ── Temperature thresholds for K2 (°C) ────────────────────────────────── */
-#define TEMP_BLUE_MAX   50   /* < 50°C  -> BLUE  (cool) */
-#define TEMP_WHITE_MAX  70   /* 50-70°C -> WHITE (warm) */
-                             /* > 70°C  -> RED   (hot)  */
+#define TEMP_BLUE_MAX   50
+#define TEMP_WHITE_MAX  70
 
-/* ── CPU usage thresholds for K3 (%) ───────────────────────────────────── */
-#define CPU_GREEN_MAX   60   /* < 60%   -> GREEN  */
-#define CPU_YELLOW_MAX  80   /* 60-80%  -> YELLOW */
-                             /* > 80%   -> RED    */
+#define CPU_GREEN_MAX   60
+#define CPU_YELLOW_MAX  80
 
-/* ── Globals ────────────────────────────────────────────────────────────── */
 static volatile int running = 1;
 static int log_interval = DEFAULT_LOG_INTERVAL_SEC;
 
-/* ── Signal handler ─────────────────────────────────────────────────────── */
 static void handle_signal(int sig)
 {
     (void)sig;
     running = 0;
 }
 
-/* ── PWM helpers ────────────────────────────────────────────────────────── */
 static int pwm_write(const char *chip, const char *channel,
                      const char *attr, const char *value)
 {
@@ -84,18 +74,16 @@ static int pwm_export(const char *chip, int channel_num)
     char path[256];
     char ch_path[256];
     char num[8];
-
     snprintf(ch_path, sizeof(ch_path), "%s/%s/pwm%d", PWM_BASE, chip, channel_num);
-    if (access(ch_path, F_OK) == 0)
-        return 0; /* already exported */
-
+    if (access(ch_path, F_OK) == 0) return 0;
     snprintf(path, sizeof(path), "%s/%s/export", PWM_BASE, chip);
     snprintf(num, sizeof(num), "%d", channel_num);
     int fd = open(path, O_WRONLY);
     if (fd < 0) return -1;
-    write(fd, num, strlen(num));
+    ssize_t r = write(fd, num, strlen(num));
     close(fd);
-    usleep(50000); /* wait for sysfs node */
+    if (r < 0) return -1;
+    usleep(50000);
     return 0;
 }
 
@@ -117,7 +105,6 @@ static void pwm_set_duty(const char *chip, const char *channel, int percent)
     pwm_write(chip, channel, "duty_cycle", duty);
 }
 
-/* Set RGB LED: r, g, b each 0-100 */
 static void led_set_rgb(int r, int g, int b)
 {
     pwm_set_duty(PWM_RED_CHIP,   PWM_RED_CH,   r);
@@ -125,14 +112,13 @@ static void led_set_rgb(int r, int g, int b)
     pwm_set_duty(PWM_BLUE_CHIP,  PWM_BLUE_CH,  b);
 }
 
-static void led_off(void)   { led_set_rgb(0,   0,   0);   }
-static void led_red(void)   { led_set_rgb(100, 0,   0);   }
-static void led_green(void) { led_set_rgb(0,   100, 0);   }
-static void led_blue(void)  { led_set_rgb(0,   0,   100); }
-static void led_white(void) { led_set_rgb(100, 100, 100); }
-static void led_yellow(void){ led_set_rgb(100, 100, 0);   }
+static void led_off(void)    { led_set_rgb(0,   0,   0);   }
+static void led_red(void)    { led_set_rgb(100, 0,   0);   }
+static void led_green(void)  { led_set_rgb(0,   100, 0);   }
+static void led_blue(void)   { led_set_rgb(0,   0,   100); }
+static void led_white(void)  { led_set_rgb(100, 100, 100); }
+static void led_yellow(void) { led_set_rgb(100, 100, 0);   }
 
-/* ── CPU usage ──────────────────────────────────────────────────────────── */
 typedef struct { long user, nice, sys, idle, iowait, irq, softirq; } CpuStat;
 
 static int read_cpu_stat(CpuStat *s)
@@ -152,22 +138,18 @@ static float get_cpu_usage(void)
     if (read_cpu_stat(&s1) < 0) return 0.0f;
     usleep(200000);
     if (read_cpu_stat(&s2) < 0) return 0.0f;
-
-    long idle1 = s1.idle + s1.iowait;
-    long idle2 = s2.idle + s2.iowait;
+    long idle1  = s1.idle + s1.iowait;
+    long idle2  = s2.idle + s2.iowait;
     long total1 = s1.user + s1.nice + s1.sys + idle1 + s1.irq + s1.softirq;
     long total2 = s2.user + s2.nice + s2.sys + idle2 + s2.irq + s2.softirq;
-
     long dtotal = total2 - total1;
     long didle  = idle2  - idle1;
     if (dtotal == 0) return 0.0f;
     return 100.0f * (float)(dtotal - didle) / (float)dtotal;
 }
 
-/* ── CPU temperature ────────────────────────────────────────────────────── */
 static float get_cpu_temp(void)
 {
-    /* Try common thermal zone paths */
     const char *paths[] = {
         "/sys/class/thermal/thermal_zone0/temp",
         "/sys/class/thermal/thermal_zone1/temp",
@@ -177,15 +159,14 @@ static float get_cpu_temp(void)
         FILE *f = fopen(paths[i], "r");
         if (!f) continue;
         long raw = 0;
-        fscanf(f, "%ld", &raw);
+        int r = fscanf(f, "%ld", &raw);
         fclose(f);
-        if (raw > 0)
+        if (r == 1 && raw > 0)
             return (float)raw / 1000.0f;
     }
     return -1.0f;
 }
 
-/* ── Config file parser ─────────────────────────────────────────────────── */
 static void load_config(void)
 {
     FILE *f = fopen(CONFIG_FILE, "r");
@@ -205,45 +186,46 @@ static void load_config(void)
     fclose(f);
 }
 
-/* ── Main ───────────────────────────────────────────────────────────────── */
 int main(void)
 {
-    /* Setup signals */
     signal(SIGTERM, handle_signal);
     signal(SIGINT,  handle_signal);
 
-    /* Open syslog */
     openlog("sysmond", LOG_PID | LOG_CONS, LOG_DAEMON);
     syslog(LOG_INFO, "sysmond starting up");
-
-    /* Load config */
     load_config();
 
-    /* Init PWM channels */
     pwm_init_channel(PWM_RED_CHIP,   PWM_RED_CH,   2);
     pwm_init_channel(PWM_BLUE_CHIP,  PWM_BLUE_CH,  2);
     pwm_init_channel(PWM_GREEN_CHIP, PWM_GREEN_CH, 0);
     led_off();
 
-    /* Open GPIO chip for buttons */
-    struct gpiod_chip *chip = gpiod_chip_open_by_name(BUTTON_CHIP);
+    struct gpiod_chip *chip = gpiod_chip_open(BUTTON_CHIP_DEV);
     if (!chip) {
-        syslog(LOG_ERR, "Failed to open %s: %s", BUTTON_CHIP, strerror(errno));
+        syslog(LOG_ERR, "Failed to open %s: %s", BUTTON_CHIP_DEV, strerror(errno));
         closelog();
         return EXIT_FAILURE;
     }
 
-    struct gpiod_line *k2 = gpiod_chip_get_line(chip, BUTTON_K2_LINE);
-    struct gpiod_line *k3 = gpiod_chip_get_line(chip, BUTTON_K3_LINE);
-    if (!k2 || !k3) {
-        syslog(LOG_ERR, "Failed to get button GPIO lines");
-        gpiod_chip_close(chip);
-        closelog();
-        return EXIT_FAILURE;
-    }
+    struct gpiod_line_settings *line_settings = gpiod_line_settings_new();
+    gpiod_line_settings_set_direction(line_settings, GPIOD_LINE_DIRECTION_INPUT);
+    gpiod_line_settings_set_bias(line_settings, GPIOD_LINE_BIAS_PULL_UP);
 
-    if (gpiod_line_request_input(k2, "sysmond-k2") < 0 ||
-        gpiod_line_request_input(k3, "sysmond-k3") < 0) {
+    struct gpiod_line_config *line_cfg = gpiod_line_config_new();
+    unsigned int offsets[2] = { BUTTON_K2_LINE, BUTTON_K3_LINE };
+    gpiod_line_config_add_line_settings(line_cfg, offsets, 2, line_settings);
+
+    struct gpiod_request_config *req_cfg = gpiod_request_config_new();
+    gpiod_request_config_set_consumer(req_cfg, "sysmond");
+
+    struct gpiod_line_request *request =
+        gpiod_chip_request_lines(chip, req_cfg, line_cfg);
+
+    gpiod_line_settings_free(line_settings);
+    gpiod_line_config_free(line_cfg);
+    gpiod_request_config_free(req_cfg);
+
+    if (!request) {
         syslog(LOG_ERR, "Failed to request button lines: %s", strerror(errno));
         gpiod_chip_close(chip);
         closelog();
@@ -257,12 +239,11 @@ int main(void)
     while (running) {
         time_t now = time(NULL);
 
-        /* ── Periodic logging ── */
         if ((now - last_log) >= log_interval) {
             float temp  = get_cpu_temp();
             float usage = get_cpu_usage();
             if (temp >= 0)
-                syslog(LOG_INFO, "CPU usage: %.1f%%, Temperature: %.1f°C",
+                syslog(LOG_INFO, "CPU usage: %.1f%%, Temperature: %.1f degC",
                        usage, temp);
             else
                 syslog(LOG_INFO, "CPU usage: %.1f%%, Temperature: unavailable",
@@ -270,12 +251,12 @@ int main(void)
             last_log = now;
         }
 
-        /* ── Button polling ── */
-        int k2_val = gpiod_line_get_value(k2);
-        int k3_val = gpiod_line_get_value(k3);
+        enum gpiod_line_value k2_val =
+            gpiod_line_request_get_value(request, BUTTON_K2_LINE);
+        enum gpiod_line_value k3_val =
+            gpiod_line_request_get_value(request, BUTTON_K3_LINE);
 
-        if (k2_val == 0) {
-            /* K2 held: show temperature via LED color */
+        if (k2_val == GPIOD_LINE_VALUE_INACTIVE) {
             float temp = get_cpu_temp();
             if (temp < 0)
                 led_off();
@@ -285,8 +266,7 @@ int main(void)
                 led_white();
             else
                 led_red();
-        } else if (k3_val == 0) {
-            /* K3 held: show CPU usage via LED color */
+        } else if (k3_val == GPIOD_LINE_VALUE_INACTIVE) {
             float usage = get_cpu_usage();
             if (usage < CPU_GREEN_MAX)
                 led_green();
@@ -295,17 +275,14 @@ int main(void)
             else
                 led_red();
         } else {
-            /* No button pressed */
             led_off();
         }
 
-        usleep(100000); /* 100ms poll interval */
+        usleep(100000);
     }
 
-    /* Cleanup */
     led_off();
-    gpiod_line_release(k2);
-    gpiod_line_release(k3);
+    gpiod_line_request_release(request);
     gpiod_chip_close(chip);
     syslog(LOG_INFO, "sysmond stopped");
     closelog();
