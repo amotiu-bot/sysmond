@@ -15,7 +15,7 @@ SYSTEMD_DIR ?= /lib/systemd/system
 all: $(TARGET)
 
 $(TARGET): $(SRC)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lgpiod
 
 clean:
 	rm -f $(TARGET)
