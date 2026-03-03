@@ -1,0 +1,16 @@
+[Unit]
+Description=System Monitoring Daemon
+After=multi-user.target
+Wants=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/sysmond
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sysmond
+
+[Install]
+WantedBy=multi-user.target
