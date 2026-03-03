@@ -2,9 +2,9 @@ SUMMARY = "System Monitoring Daemon for FRDM-IMX93"
 DESCRIPTION = "Monitors CPU usage and temperature, logs via syslog. \
                K2/K3 buttons control LED1 RGB color indication."
 LICENSE = "MIT"
-LIC_FILES_CHKSUM = "file://LICENSE;md5=<UPDATE_AFTER_ADDING_LICENSE_FILE>"
+LIC_FILES_CHKSUM = "file://LICENSE;md5=bf72105a69d303b78352c6a39239bc69"
 
-SRC_URI = "git://github.com/<YOUR_GITHUB_USERNAME>/sysmond.git;protocol=https;branch=main"
+SRC_URI = "git://github.com/amotiu-bot/sysmond.git;protocol=https;branch=main"
 SRCREV = "${AUTOREV}"
 
 S = "${WORKDIR}/git"
