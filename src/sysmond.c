@@ -11,8 +11,8 @@
  *   Green -> pwmchip0 pwm0  (GPIO_IO04 -> TPM3_CH0)
  *
  * Buttons via input event device:
- *   K2 -> /dev/input/event1  BTN_1 (code 257)
- *   K3 -> /dev/input/event1  BTN_2 (code 258)
+ *   K2 -> /dev/input/event1  BTN_1 (code 257), value 0=pressed 1=released
+ *   K3 -> /dev/input/event1  BTN_2 (code 258), value 0=pressed 1=released
  */
 
 #include <stdio.h>
@@ -42,6 +42,8 @@
 #define BUTTON_DEV      "/dev/input/event1"
 #define BTN_K2_CODE     257   /* BTN_1 */
 #define BTN_K3_CODE     258   /* BTN_2 */
+#define BTN_PRESSED     0
+#define BTN_RELEASED    1
 
 #define TEMP_BLUE_MAX   50
 #define TEMP_WHITE_MAX  70
@@ -222,8 +224,8 @@ int main(void)
         struct input_event ev;
         while (read(btn_fd, &ev, sizeof(ev)) > 0) {
             if (ev.type == EV_KEY) {
-                if (ev.code == BTN_K2_CODE) k2_pressed = ev.value;
-                if (ev.code == BTN_K3_CODE) k3_pressed = ev.value;
+                if (ev.code == BTN_K2_CODE) k2_pressed = (ev.value == BTN_PRESSED);
+                if (ev.code == BTN_K3_CODE) k3_pressed = (ev.value == BTN_PRESSED);
             }
         }
 
