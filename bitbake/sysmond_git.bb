@@ -9,8 +9,8 @@ SRCREV = "${AUTOREV}"
 
 S = "${WORKDIR}/git"
 
-DEPENDS = "libgpiod"
-RDEPENDS:${PN} = "libgpiod"
+DEPENDS = ""
+RDEPENDS:${PN} = ""
 
 inherit systemd
 

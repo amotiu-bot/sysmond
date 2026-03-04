@@ -1,6 +1,6 @@
 CC      ?= $(CROSS_COMPILE)gcc
 CFLAGS  ?= -Wall -Wextra -O2
-LDFLAGS ?= -lgpiod
+LDFLAGS ?=
 
 TARGET  = sysmond
 SRC     = src/sysmond.c
@@ -15,7 +15,7 @@ SYSTEMD_DIR ?= /lib/systemd/system
 all: $(TARGET)
 
 $(TARGET): $(SRC)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) -lgpiod
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) 
 
 clean:
 	rm -f $(TARGET)
