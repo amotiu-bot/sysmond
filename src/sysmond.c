@@ -10,7 +10,7 @@
  *   Blue  -> pwmchip0 pwm2  (GPIO_IO12 -> TPM3_CH2)
  *   Green -> pwmchip0 pwm0  (GPIO_IO04 -> TPM3_CH0)
  *
- * Buttons via Linux input event interface:
+ * Buttons via input event device:
  *   K2 -> /dev/input/event1  BTN_1 (code 257)
  *   K3 -> /dev/input/event1  BTN_2 (code 258)
  */
@@ -25,6 +25,7 @@
 #include <errno.h>
 #include <time.h>
 #include <linux/input.h>
+#include <sys/ioctl.h>
 
 #define DEFAULT_LOG_INTERVAL_SEC   5
 #define CONFIG_FILE                "/etc/sysmond.conf"
@@ -39,8 +40,8 @@
 #define PWM_PERIOD_NS   1000000
 
 #define BUTTON_DEV      "/dev/input/event1"
-#define BTN_K2          257
-#define BTN_K3          258
+#define BTN_K2_CODE     257   /* BTN_1 */
+#define BTN_K3_CODE     258   /* BTN_2 */
 
 #define TEMP_BLUE_MAX   50
 #define TEMP_WHITE_MAX  70
@@ -51,7 +52,11 @@
 static volatile int running = 1;
 static int log_interval = DEFAULT_LOG_INTERVAL_SEC;
 
-static void handle_signal(int sig) { (void)sig; running = 0; }
+static void handle_signal(int sig)
+{
+    (void)sig;
+    running = 0;
+}
 
 static int pwm_write(const char *chip, const char *channel,
                      const char *attr, const char *value)
@@ -166,7 +171,10 @@ static float get_cpu_temp(void)
 static void load_config(void)
 {
     FILE *f = fopen(CONFIG_FILE, "r");
-    if (!f) { syslog(LOG_INFO, "Config file not found, using defaults"); return; }
+    if (!f) {
+        syslog(LOG_INFO, "Config file not found, using defaults");
+        return;
+    }
     char line[256];
     while (fgets(line, sizeof(line), f)) {
         if (line[0] == '#' || line[0] == '\n') continue;
@@ -193,9 +201,9 @@ int main(void)
     pwm_init_channel(PWM_GREEN_CHIP, PWM_GREEN_CH, 0);
     led_off();
 
-    /* Open input event device for buttons (non-blocking) */
-    int evfd = open(BUTTON_DEV, O_RDONLY | O_NONBLOCK);
-    if (evfd < 0) {
+    /* Open input event device for buttons */
+    int btn_fd = open(BUTTON_DEV, O_RDONLY | O_NONBLOCK);
+    if (btn_fd < 0) {
         syslog(LOG_ERR, "Failed to open %s: %s", BUTTON_DEV, strerror(errno));
         closelog();
         return EXIT_FAILURE;
@@ -210,14 +218,12 @@ int main(void)
     while (running) {
         time_t now = time(NULL);
 
-        /* Read all pending input events */
+        /* Drain input events to update button state */
         struct input_event ev;
-        while (read(evfd, &ev, sizeof(ev)) == sizeof(ev)) {
+        while (read(btn_fd, &ev, sizeof(ev)) > 0) {
             if (ev.type == EV_KEY) {
-                if (ev.code == BTN_K2)
-                    k2_pressed = (ev.value == 1);
-                else if (ev.code == BTN_K3)
-                    k3_pressed = (ev.value == 1);
+                if (ev.code == BTN_K2_CODE) k2_pressed = ev.value;
+                if (ev.code == BTN_K3_CODE) k3_pressed = ev.value;
             }
         }
 
@@ -234,7 +240,6 @@ int main(void)
             last_log = now;
         }
 
-        /* LED control based on button state */
         if (k2_pressed) {
             float temp = get_cpu_temp();
             if (temp < 0)                   led_off();
@@ -250,11 +255,11 @@ int main(void)
             led_off();
         }
 
-        usleep(100000); /* 100ms poll interval */
+        usleep(100000);
     }
 
     led_off();
-    close(evfd);
+    close(btn_fd);
     syslog(LOG_INFO, "sysmond stopped");
     closelog();
     return EXIT_SUCCESS;
