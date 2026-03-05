@@ -45,8 +45,8 @@
 #define BTN_PRESSED     0
 #define BTN_RELEASED    1
 
-#define TEMP_BLUE_MAX   50
-#define TEMP_WHITE_MAX  70
+#define TEMP_BLUE_MAX   40
+#define TEMP_WHITE_MAX  45
 
 #define CPU_GREEN_MAX   60
 #define CPU_YELLOW_MAX  80
