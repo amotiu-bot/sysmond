@@ -15,17 +15,17 @@
  *   K3 -> /dev/input/event1  BTN_2 (code 258), value 0=pressed 1=released
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <signal.h>
-#include <syslog.h>
-#include <fcntl.h>
-#include <errno.h>
-#include <time.h>
-#include <linux/input.h>
-#include <sys/ioctl.h>
+#include <stdio.h>  // fopen, fgets, fscanf, printf
+#include <stdlib.h> // EXIT_SUCCESS, EXIT_FAILURE
+#include <string.h> // strlen, strcmp
+#include <unistd.h> // write, read, close, access, usleep
+#include <signal.h> // signal(), SIGTERM, SIGINT
+#include <syslog.h> // openlog(), syslog(), closelog()
+#include <fcntl.h>  // open(), O_WRONLY, O_RDONLY, O_NONBLOCK
+#include <errno.h>  // errno, strerror()
+#include <time.h>   // time(), time_t
+#include <linux/input.h> // input_event, EV_KEY, BTN_1, BTN_2
+#include <sys/ioctl.h>   // ioctl() - included for completeness
 
 #define DEFAULT_LOG_INTERVAL_SEC   5
 #define CONFIG_FILE                "/etc/sysmond.conf"
@@ -38,6 +38,7 @@
 #define PWM_GREEN_CH    "pwm0"
 #define PWM_BASE        "/sys/class/pwm"
 #define PWM_PERIOD_NS   1000000
+/* 1,000,000 nanoseconds = 1ms = 1kHz frequency.*/
 
 #define BUTTON_DEV      "/dev/input/event1"
 #define BTN_K2_CODE     257   /* BTN_1 */
@@ -74,6 +75,7 @@ static int pwm_write(const char *chip, const char *channel,
 
 static int pwm_export(const char *chip, int channel_num)
 {
+    // Before a PWM channel can be used, it must be exported — this tells the kernel to create the sysfs control files for that channel. 
     char path[256];
     char ch_path[256];
     char num[8];
@@ -86,7 +88,7 @@ static int pwm_export(const char *chip, int channel_num)
     ssize_t r = write(fd, num, strlen(num));
     close(fd);
     if (r < 0) return -1;
-    usleep(50000);
+    usleep(50000); // waits 50ms for the kernel to create the files.
     return 0;
 }
 
@@ -123,6 +125,7 @@ static void led_white(void)  { led_set_rgb(100, 100, 100); }
 static void led_yellow(void) { led_set_rgb(100, 100, 0);   }
 
 typedef struct { long user, nice, sys, idle, iowait, irq, softirq; } CpuStat;
+// The `/proc/stat` file exposes CPU time counters in **jiffies** (kernel timer ticks)
 
 static int read_cpu_stat(CpuStat *s)
 {
@@ -137,6 +140,11 @@ static int read_cpu_stat(CpuStat *s)
 
 static float get_cpu_usage(void)
 {
+    /* CPU usage is a rate — you can't calculate it from a single snapshot. 
+    You need to measure how many ticks were spent idle vs busy **over a time period**. 
+    The formula is:     CPU% = 100 * (total_ticks - idle_ticks) / total_ticks 
+    The 200ms gap gives a reasonable sample window without being too slow */
+    
     CpuStat s1, s2;
     if (read_cpu_stat(&s1) < 0) return 0.0f;
     usleep(200000);
@@ -153,6 +161,10 @@ static float get_cpu_usage(void)
 
 static float get_cpu_temp(void)
 {
+    /*
+    The kernel thermal framework exposes temperatures in millidegrees Celsius. Reading 41800 from the file means 41.8°C. Dividing by 1000 converts to degrees.
+    The function tries multiple thermal zones in order — different SoCs expose temperature on different zones. Returning -1.0f signals an error to the caller.
+    */
     const char *paths[] = {
         "/sys/class/thermal/thermal_zone0/temp",
         "/sys/class/thermal/thermal_zone1/temp",
@@ -191,19 +203,28 @@ static void load_config(void)
 
 int main(void)
 {
+    // 1. Register signal handlers
     signal(SIGTERM, handle_signal);
     signal(SIGINT,  handle_signal);
 
+    // 2. Open syslog
     openlog("sysmond", LOG_PID | LOG_CONS, LOG_DAEMON);
     syslog(LOG_INFO, "sysmond starting up");
+
+    // 3. Load config
     load_config();
 
+    // 4. Initialize PWM channels and turn LED off
     pwm_init_channel(PWM_RED_CHIP,   PWM_RED_CH,   2);
     pwm_init_channel(PWM_BLUE_CHIP,  PWM_BLUE_CH,  2);
     pwm_init_channel(PWM_GREEN_CHIP, PWM_GREEN_CH, 0);
     led_off();
 
-    /* Open input event device for buttons */
+    // 5. Open button input device in NON-BLOCKING mode
+    /*
+    Without O_NONBLOCK, read() would block (pause the program) waiting for a button event. 
+    With it, read() returns immediately with EAGAIN if no events are pending, allowing the loop to continue running.
+    */
     int btn_fd = open(BUTTON_DEV, O_RDONLY | O_NONBLOCK);
     if (btn_fd < 0) {
         syslog(LOG_ERR, "Failed to open %s: %s", BUTTON_DEV, strerror(errno));
@@ -216,7 +237,8 @@ int main(void)
     time_t last_log = 0;
     int k2_pressed = 0;
     int k3_pressed = 0;
-
+ 
+    // 6. Main loop
     while (running) {
         time_t now = time(NULL);
 
@@ -228,6 +250,12 @@ int main(void)
                 if (ev.code == BTN_K3_CODE) k3_pressed = (ev.value == BTN_PRESSED);
             }
         }
+        /* Multiple events can queue up between loop iterations. 
+        This inner loop reads all pending events before proceeding, ensuring no button press or release is missed.
+        State tracking with k2_pressed/k3_pressed:
+        Instead of reacting to events directly, the code tracks the current state of each button. 
+        This means the LED logic only needs to check the current state, not worry about event ordering.
+        */
 
         /* Periodic logging */
         if ((now - last_log) >= log_interval) {
@@ -242,6 +270,7 @@ int main(void)
             last_log = now;
         }
 
+        /* LED control based on button state */
         if (k2_pressed) {
             float temp = get_cpu_temp();
             if (temp < 0)                   led_off();
@@ -257,7 +286,10 @@ int main(void)
             led_off();
         }
 
-        usleep(100000);
+        /* 100ms sleep */
+        usleep(100000); 
+        // Sleeps 100 milliseconds between iterations. This is responsive enough for human button presses while using almost no CPU — the daemon consumes ~0% CPU at idle.
+
     }
 
     led_off();
